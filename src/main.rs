@@ -1,4 +1,4 @@
-use calc::{
+use rnum::{
     eval::{EvalError, EvalOutput, Evaluator},
     lexer::LexingError,
     parser::ParseError,
