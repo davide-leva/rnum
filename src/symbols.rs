@@ -18,6 +18,10 @@ impl SymbolCache {
         self.map.remove(symbol).is_some()
     }
 
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
     pub fn entries(&self) -> Vec<(&str, f64)> {
         let mut entries: Vec<_> = self
             .map

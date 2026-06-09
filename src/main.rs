@@ -21,6 +21,11 @@ fn main() {
         Command::Fn(command) => cmd_fn(&mut evaluator, command),
         Command::Save(filename) => cmd_save(&evaluator, filename),
         Command::Help => CommandResult::success(print_help()),
+        Command::Clear => CommandResult::clear(),
+        Command::Reset => {
+            evaluator.reset();
+            CommandResult::clear()
+        }
         Command::Exit => CommandResult::exit(),
     }) {
         eprintln!("Input error: {err}");
@@ -39,7 +44,7 @@ fn cmd_eval(evaluator: &mut Evaluator, expr: &str) -> CommandResult {
 
 fn cmd_ast(evaluator: &mut Evaluator, expr: &str) -> CommandResult {
     if expr.is_empty() {
-        return CommandResult::error("Usage: :ast <expr>".to_string());
+        return CommandResult::error("Usage: ast <expr>".to_string());
     }
 
     match evaluator.ast(expr) {
@@ -51,14 +56,18 @@ fn cmd_ast(evaluator: &mut Evaluator, expr: &str) -> CommandResult {
 fn print_help() -> String {
     [
         "Commands:",
-        "  :help              show this help",
-        "  :ast <expr>        print the parsed AST",
-        "  :var               list variables",
-        "  :var del <name>    delete a variable",
-        "  :fn                list user functions",
-        "  :fn del <name>     delete a user function",
-        "  :save <filename>   save history, variables, and functions",
-        "  :exit, :quit       exit",
+        "  help              show this help",
+        "  ast <expr>        print the parsed AST",
+        "  var               list variables",
+        "  var del <name>    delete a variable",
+        "  fn                list user functions",
+        "  fn del <name>     delete a user function",
+        "  save <filename>   save history, variables, and functions",
+        "  clear             clear the screen",
+        "  reset             clear the screen and workspace",
+        "  exit, quit        exit",
+        "",
+        "Command names are reserved and cannot be used as variables or functions.",
         "",
         "Operators:",
         "  =  +  -  *  /  %  ^",
@@ -93,7 +102,7 @@ fn cmd_var(evaluator: &mut Evaluator, command: VarCommand) -> CommandResult {
         VarCommand::List => CommandResult::success(format_vars(evaluator)),
         VarCommand::Del(name) => {
             if name.is_empty() {
-                CommandResult::error("Usage: :var del <name>".to_string())
+                CommandResult::error("Usage: var del <name>".to_string())
             } else if evaluator.del_var(&name) {
                 CommandResult::success(format!("Deleted variable `{name}`"))
             } else {
@@ -108,7 +117,7 @@ fn cmd_fn(evaluator: &mut Evaluator, command: FnCommand) -> CommandResult {
         FnCommand::List => CommandResult::success(format_functions(evaluator)),
         FnCommand::Del(name) => {
             if name.is_empty() {
-                CommandResult::error("Usage: :fn del <name>".to_string())
+                CommandResult::error("Usage: fn del <name>".to_string())
             } else if evaluator.del_function(&name) {
                 CommandResult::success(format!("Deleted function `{name}`"))
             } else {
@@ -120,7 +129,7 @@ fn cmd_fn(evaluator: &mut Evaluator, command: FnCommand) -> CommandResult {
 
 fn cmd_save(evaluator: &Evaluator, filename: String) -> CommandResult {
     if filename.is_empty() {
-        return CommandResult::error("Usage: :save <filename>".to_string());
+        return CommandResult::error("Usage: save <filename>".to_string());
     }
 
     CommandResult::save(filename, format_save_state(evaluator))
@@ -237,6 +246,15 @@ impl Diagnostic {
                     len: function.len().max(1),
                     message: format!("recursive function call `{function}`"),
                     detail: "recursive user functions are not supported".to_string(),
+                }
+            }
+            EvalError::ReservedCommandName(name) => {
+                let pos = input.find(name).unwrap_or(0);
+                Self {
+                    pos,
+                    len: name.len().max(1),
+                    message: format!("reserved command name `{name}`"),
+                    detail: "command names cannot be used as variables or functions".to_string(),
                 }
             }
         }

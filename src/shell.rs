@@ -17,6 +17,8 @@ pub enum Command {
     Fn(FnCommand),
     Save(String),
     Help,
+    Clear,
+    Reset,
     Exit,
 }
 
@@ -34,6 +36,7 @@ pub enum CommandResult {
     Success(String),
     Error(String),
     Save { filename: String, content: String },
+    Clear,
     Exit,
 }
 
@@ -52,6 +55,10 @@ impl CommandResult {
 
     pub fn save(filename: String, content: String) -> Self {
         Self::Save { filename, content }
+    }
+
+    pub fn clear() -> Self {
+        Self::Clear
     }
 }
 
@@ -87,6 +94,11 @@ impl Shell {
 
             self.finish_line(&line.input, status)?;
 
+            if result.clears_screen() {
+                print!("\x1b[2J\x1b[H");
+                io::stdout().flush()?;
+            }
+
             if let Some(output) = result.output() {
                 if !output.is_empty() {
                     println!("{output}");
@@ -97,7 +109,9 @@ impl Shell {
                 break;
             }
 
-            println!();
+            if !result.clears_screen() {
+                println!();
+            }
         }
 
         Ok(())
@@ -205,7 +219,10 @@ impl Shell {
 
 impl CommandResult {
     fn is_success(&self) -> bool {
-        matches!(self, CommandResult::Success(_) | CommandResult::Exit)
+        matches!(
+            self,
+            CommandResult::Success(_) | CommandResult::Clear | CommandResult::Exit
+        )
     }
 
     fn should_exit(&self) -> bool {
@@ -216,8 +233,13 @@ impl CommandResult {
         match self {
             CommandResult::Success(output) | CommandResult::Error(output) => Some(output),
             CommandResult::Save { .. } => None,
+            CommandResult::Clear => None,
             CommandResult::Exit => None,
         }
+    }
+
+    fn clears_screen(&self) -> bool {
+        matches!(self, CommandResult::Clear)
     }
 }
 
@@ -249,33 +271,52 @@ impl Default for Shell {
 }
 
 fn parse_command(input: &str) -> Option<Command> {
-    if let Some(expr) = input.strip_prefix(":ast") {
-        return Some(Command::Ast(expr.trim().to_string()));
+    let input = input.strip_prefix(':').unwrap_or(input);
+
+    if let Some(expr) = command_arg(input, "ast") {
+        return Some(Command::Ast(expr.to_string()));
     }
 
-    if let Some(name) = input.strip_prefix(":var del ") {
-        return Some(Command::Var(VarCommand::Del(name.trim().to_string())));
+    if let Some(name) = command_arg(input, "var del") {
+        return Some(Command::Var(VarCommand::Del(name.to_string())));
     }
 
-    if let Some(name) = input.strip_prefix(":fn del ") {
-        return Some(Command::Fn(FnCommand::Del(name.trim().to_string())));
+    if let Some(name) = command_arg(input, "fn del") {
+        return Some(Command::Fn(FnCommand::Del(name.to_string())));
     }
 
-    if input == ":save" {
+    if input == "save" {
         return Some(Command::Save(String::new()));
     }
 
-    if let Some(filename) = input.strip_prefix(":save ") {
-        return Some(Command::Save(filename.trim().to_string()));
+    if let Some(filename) = command_arg(input, "save") {
+        return Some(Command::Save(filename.to_string()));
     }
 
     match input {
-        ":help" => Some(Command::Help),
-        ":exit" | ":quit" => Some(Command::Exit),
-        ":var" => Some(Command::Var(VarCommand::List)),
-        ":fn" => Some(Command::Fn(FnCommand::List)),
+        "help" => Some(Command::Help),
+        "clear" => Some(Command::Clear),
+        "reset" => Some(Command::Reset),
+        "exit" | "quit" => Some(Command::Exit),
+        "var" => Some(Command::Var(VarCommand::List)),
+        "fn" => Some(Command::Fn(FnCommand::List)),
         _ => None,
     }
+}
+
+fn command_arg<'a>(input: &'a str, command: &str) -> Option<&'a str> {
+    if input == command {
+        return Some("");
+    }
+
+    let rest = input.strip_prefix(command)?;
+    let ch = rest.chars().next()?;
+
+    if !ch.is_whitespace() {
+        return None;
+    }
+
+    Some(rest[ch.len_utf8()..].trim())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -467,5 +508,56 @@ impl Drop for RawMode {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, FnCommand, VarCommand, parse_command};
+
+    #[test]
+    fn parses_commands_without_colon() {
+        assert!(matches!(parse_command("help"), Some(Command::Help)));
+        assert!(matches!(parse_command("clear"), Some(Command::Clear)));
+        assert!(matches!(parse_command("reset"), Some(Command::Reset)));
+        assert!(matches!(parse_command("quit"), Some(Command::Exit)));
+        assert!(matches!(
+            parse_command("var"),
+            Some(Command::Var(VarCommand::List))
+        ));
+        assert!(matches!(
+            parse_command("fn"),
+            Some(Command::Fn(FnCommand::List))
+        ));
+        assert!(matches!(
+            parse_command("var del x"),
+            Some(Command::Var(VarCommand::Del(name))) if name == "x"
+        ));
+        assert!(matches!(
+            parse_command("fn del f"),
+            Some(Command::Fn(FnCommand::Del(name))) if name == "f"
+        ));
+        assert!(matches!(
+            parse_command("ast 1 + 2"),
+            Some(Command::Ast(expr)) if expr == "1 + 2"
+        ));
+        assert!(matches!(
+            parse_command("save session.txt"),
+            Some(Command::Save(filename)) if filename == "session.txt"
+        ));
+    }
+
+    #[test]
+    fn keeps_colon_commands_working() {
+        assert!(matches!(parse_command(":help"), Some(Command::Help)));
+        assert!(matches!(parse_command(":clear"), Some(Command::Clear)));
+        assert!(matches!(parse_command(":reset"), Some(Command::Reset)));
+    }
+
+    #[test]
+    fn does_not_parse_command_prefixes_as_commands() {
+        assert!(parse_command("asterisk").is_none());
+        assert!(parse_command("variable").is_none());
+        assert!(parse_command("reset_value").is_none());
     }
 }

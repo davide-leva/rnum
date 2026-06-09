@@ -25,6 +25,7 @@ pub enum EvalError {
     RecursiveFunctionCall {
         function: String,
     },
+    ReservedCommandName(String),
 }
 
 pub enum EvalOutput {
@@ -161,6 +162,14 @@ impl Evaluator {
         self.functions.remove(name).is_some()
     }
 
+    pub fn reset(&mut self) {
+        self.symbols.clear();
+        self.functions.clear();
+        self.scopes.clear();
+        self.call_stack.clear();
+        self.ans = 0.0;
+    }
+
     fn eval_and_set(&mut self, expr: &Expr) -> Result<EvalValue, EvalError> {
         let value = self.eval_expr(expr)?;
         self.ans = value.value;
@@ -173,11 +182,19 @@ impl Evaluator {
             Expr::Number { value, format } => Ok(EvalValue::new(*value, *format)),
             Expr::Symbol(name) => self.resolve_symbol(name),
             Expr::Assign { name, expr } => {
+                if is_reserved_command_name(name) {
+                    return Err(EvalError::ReservedCommandName(name.clone()));
+                }
+
                 let value = self.eval_expr(expr)?;
                 self.symbols.save(name.clone(), value.value);
                 Ok(value)
             }
             Expr::FunctionDef { name, params, body } => {
+                if is_reserved_command_name(name) {
+                    return Err(EvalError::ReservedCommandName(name.clone()));
+                }
+
                 self.functions.insert(
                     name.clone(),
                     Function {
@@ -404,6 +421,13 @@ fn is_builtin(name: &str) -> bool {
     matches!(name, "sqrt" | "sin" | "cos" | "tan" | "ln" | "log" | "abs")
 }
 
+fn is_reserved_command_name(name: &str) -> bool {
+    matches!(
+        name,
+        "help" | "ast" | "var" | "fn" | "save" | "clear" | "reset" | "exit" | "quit"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{EvalError, EvalOutput, Evaluator};
@@ -575,5 +599,41 @@ mod tests {
 
         assert_eq!(result.value, 2_147_483_648.0);
         assert_eq!(result.formatted(), "2GB");
+    }
+
+    #[test]
+    fn rejects_assignment_to_command_name() {
+        let mut evaluator = Evaluator::new();
+
+        let err = evaluator.eval("help = 1").unwrap_err();
+
+        assert!(matches!(err, EvalError::ReservedCommandName(name) if name == "help"));
+    }
+
+    #[test]
+    fn rejects_function_definition_with_command_name() {
+        let mut evaluator = Evaluator::new();
+
+        let err = evaluator.eval("reset(x) = x").unwrap_err();
+
+        assert!(matches!(err, EvalError::ReservedCommandName(name) if name == "reset"));
+    }
+
+    #[test]
+    fn reset_clears_variables_and_functions() {
+        let mut evaluator = Evaluator::new();
+
+        evaluator.eval("x = 10").unwrap();
+        evaluator.eval("f(a) = a + 1").unwrap();
+        evaluator.reset();
+
+        assert!(matches!(
+            evaluator.eval("x"),
+            Err(EvalError::UnknownVariable(_))
+        ));
+        assert!(matches!(
+            evaluator.eval("f(1)"),
+            Err(EvalError::UnknownFunction(_))
+        ));
     }
 }
