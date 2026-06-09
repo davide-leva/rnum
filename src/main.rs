@@ -66,6 +66,7 @@ fn print_help() -> String {
         "  clear             clear the screen",
         "  reset             clear the screen and workspace",
         "  exit, quit        exit",
+        "  <empty>           insert ans in the prompt",
         "",
         "Command names are reserved and cannot be used as variables or functions.",
         "",

@@ -9,6 +9,7 @@ const RESET: &str = "\x1b[0m";
 const GREEN: &str = "\x1b[32m";
 const ORANGE: &str = "\x1b[38;5;208m";
 const RED: &str = "\x1b[31m";
+const EMPTY_INPUT_INSERT: &str = "ans";
 
 pub enum Command {
     Eval(String),
@@ -150,21 +151,12 @@ impl Shell {
                 return Ok(None);
             };
 
-            let input = input.trim();
-            if input.is_empty() {
+            let Some(line) = line_from_input(&input) else {
                 continue;
-            }
+            };
+            self.history.push(line.input.clone());
 
-            self.history.push(input.to_string());
-
-            if let Some(command) = parse_command(input) {
-                return Ok(Some(Line::new(command, input.to_string())));
-            }
-
-            return Ok(Some(Line::new(
-                Command::Eval(input.to_string()),
-                input.to_string(),
-            )));
+            return Ok(Some(line));
         }
     }
 
@@ -191,6 +183,12 @@ impl Shell {
         loop {
             match read_control(&mut stdin)? {
                 Control::Submit => {
+                    if editor.is_empty() {
+                        editor.replace_input(EMPTY_INPUT_INSERT);
+                        editor.render()?;
+                        continue;
+                    }
+
                     print!("\r\n");
                     io::stdout().flush()?;
                     return Ok(Some(editor.input()));
@@ -304,6 +302,22 @@ fn parse_command(input: &str) -> Option<Command> {
     }
 }
 
+fn line_from_input(input: &str) -> Option<Line> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+
+    if let Some(command) = parse_command(input) {
+        return Some(Line::new(command, input.to_string()));
+    }
+
+    Some(Line::new(
+        Command::Eval(input.to_string()),
+        input.to_string(),
+    ))
+}
+
 fn command_arg<'a>(input: &'a str, command: &str) -> Option<&'a str> {
     if input == command {
         return Some("");
@@ -353,6 +367,10 @@ impl<'a> LineEditor<'a> {
 
     fn input(&self) -> String {
         self.input.iter().collect()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.input.is_empty()
     }
 
     fn apply(&mut self, control: Control) -> io::Result<()> {
@@ -513,7 +531,10 @@ impl Drop for RawMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, FnCommand, VarCommand, parse_command};
+    use super::{
+        Command, EMPTY_INPUT_INSERT, FnCommand, LineEditor, VarCommand, line_from_input,
+        parse_command,
+    };
 
     #[test]
     fn parses_commands_without_colon() {
@@ -559,5 +580,21 @@ mod tests {
         assert!(parse_command("asterisk").is_none());
         assert!(parse_command("variable").is_none());
         assert!(parse_command("reset_value").is_none());
+    }
+
+    #[test]
+    fn empty_input_does_not_submit_from_fallback() {
+        assert!(line_from_input("   ").is_none());
+    }
+
+    #[test]
+    fn empty_editor_submit_inserts_ans() {
+        let mut editor = LineEditor::new("rnum >>> ".to_string(), &[]);
+
+        if editor.is_empty() {
+            editor.replace_input(EMPTY_INPUT_INSERT);
+        }
+
+        assert_eq!(editor.input(), "ans");
     }
 }
