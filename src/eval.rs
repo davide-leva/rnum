@@ -66,6 +66,8 @@ impl EvalValue {
         match self.format {
             Some(NumberFormat::Unit(format)) => format_unit(self.value, format),
             Some(NumberFormat::Scientific) => format_scientific(self.value),
+            Some(NumberFormat::Binary) => format_integer_base(self.value, "b", 2),
+            Some(NumberFormat::Hexadecimal) => format_integer_base(self.value, "0x", 16),
             None => self.value.to_string(),
         }
     }
@@ -351,6 +353,8 @@ impl Evaluator {
                 }
             }
             "abs" => Ok(EvalValue::plain(value.abs())),
+            "bin" => Ok(EvalValue::new(value, Some(NumberFormat::Binary))),
+            "hex" => Ok(EvalValue::new(value, Some(NumberFormat::Hexadecimal))),
             _ => unreachable!("builtin list and dispatch are out of sync"),
         }
     }
@@ -361,6 +365,8 @@ fn combine_formats(
     right: Option<NumberFormat>,
 ) -> Option<NumberFormat> {
     match (left, right) {
+        (Some(NumberFormat::Binary | NumberFormat::Hexadecimal), _) => left,
+        (_, Some(NumberFormat::Binary | NumberFormat::Hexadecimal)) => right,
         (Some(NumberFormat::Unit(_)), _) => left,
         (_, Some(NumberFormat::Unit(_))) => right,
         (Some(NumberFormat::Scientific), _) | (_, Some(NumberFormat::Scientific)) => {
@@ -368,6 +374,27 @@ fn combine_formats(
         }
         (None, None) => None,
     }
+}
+
+fn format_integer_base(value: f64, prefix: &str, radix: u32) -> String {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return value.to_string();
+    }
+
+    let sign = if value < 0.0 { "-" } else { "" };
+    let absolute = value.abs();
+
+    if absolute > u64::MAX as f64 {
+        return value.to_string();
+    }
+
+    let digits = match radix {
+        2 => format!("{:b}", absolute as u64),
+        16 => format!("{:X}", absolute as u64),
+        _ => unreachable!("unsupported integer output radix"),
+    };
+
+    format!("{sign}{prefix}{digits}")
 }
 
 fn format_scientific(value: f64) -> String {
@@ -418,7 +445,10 @@ fn trim_float(text: &str) -> String {
 }
 
 fn is_builtin(name: &str) -> bool {
-    matches!(name, "sqrt" | "sin" | "cos" | "tan" | "ln" | "log" | "abs")
+    matches!(
+        name,
+        "sqrt" | "sin" | "cos" | "tan" | "ln" | "log" | "abs" | "bin" | "hex"
+    )
 }
 
 fn is_reserved_command_name(name: &str) -> bool {
@@ -600,6 +630,54 @@ mod tests {
 
         assert_eq!(result.value, 2_147_483_648.0);
         assert_eq!(result.formatted(), "2GB");
+    }
+
+    #[test]
+    fn formats_result_as_binary_on_request() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("bin(0xAF + b1010)").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 185.0);
+        assert_eq!(result.formatted(), "b10111001");
+    }
+
+    #[test]
+    fn formats_result_as_hexadecimal_on_request() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("hex(255)").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 255.0);
+        assert_eq!(result.formatted(), "0xFF");
+    }
+
+    #[test]
+    fn requested_integer_output_format_takes_precedence() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("hex(1KB)").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 1024.0);
+        assert_eq!(result.formatted(), "0x400");
+    }
+
+    #[test]
+    fn non_integer_binary_or_hex_output_falls_back_to_decimal() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("hex(10) / 4").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 2.5);
+        assert_eq!(result.formatted(), "2.5");
     }
 
     #[test]

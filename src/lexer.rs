@@ -18,6 +18,8 @@ pub enum TokenKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumberFormat {
     Scientific,
+    Binary,
+    Hexadecimal,
     Unit(UnitFormat),
 }
 
