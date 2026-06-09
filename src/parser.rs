@@ -445,6 +445,17 @@ mod tests {
     }
 
     #[test]
+    fn parses_double_asterisk_as_power() {
+        let mut lexer = Lexer::new();
+        let tokens = lexer.tokenize("2 ** 3 ** 4").unwrap();
+        let mut parser = Parser::new();
+
+        let expr = parser.parse(tokens).unwrap();
+
+        assert_eq!(expr.to_string(), "Pow(2, Pow(3, 4))");
+    }
+
+    #[test]
     fn parses_function_call() {
         let mut lexer = Lexer::new();
         let tokens = lexer.tokenize("sqrt(1 + 8)").unwrap();

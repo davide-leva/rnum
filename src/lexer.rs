@@ -111,6 +111,12 @@ impl Lexer {
                     tokens.push(Token::new(TokenKind::Min, pos));
                 }
 
+                '*' if matches!(self.peek_next(), Some((_, '*'))) => {
+                    self.next();
+                    self.next();
+                    tokens.push(Token::new(TokenKind::Hat, pos));
+                }
+
                 '*' => {
                     self.next();
                     tokens.push(Token::new(TokenKind::Str, pos));
@@ -280,6 +286,10 @@ impl Lexer {
         self.chars.get(self.current).copied()
     }
 
+    fn peek_next(&self) -> Option<(usize, char)> {
+        self.chars.get(self.current + 1).copied()
+    }
+
     fn position(&self) -> usize {
         self.peek().map(|(pos, _)| pos).unwrap_or(self.input_len)
     }
@@ -343,6 +353,15 @@ mod tests {
                 TokenKind::EOE,
             ]
         );
+    }
+
+    #[test]
+    fn tokenizes_double_asterisk_as_power() {
+        let mut lexer = Lexer::new();
+
+        let tokens = lexer.tokenize("2 ** 3").unwrap();
+
+        assert_eq!(tokens[1].kind, TokenKind::Hat);
     }
 
     #[test]

@@ -453,6 +453,7 @@ mod tests {
         let mut evaluator = Evaluator::new();
 
         assert_eq!(evaluator.eval("2 ^ 3 ^ 2").unwrap(), 512.0);
+        assert_eq!(evaluator.eval("2 ** 3 ** 2").unwrap(), 512.0);
         assert_eq!(evaluator.eval("10 % 4").unwrap(), 2.0);
     }
 

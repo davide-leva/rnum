@@ -70,7 +70,7 @@ fn print_help() -> String {
         "Command names are reserved and cannot be used as variables or functions.",
         "",
         "Operators:",
-        "  =  +  -  *  /  %  ^",
+        "  =  +  -  *  /  %  ^  **",
         "",
         "Numbers:",
         "  10e5  34e-6",
