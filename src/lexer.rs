@@ -91,6 +91,16 @@ impl Lexer {
                     self.next();
                 }
 
+                '0' if matches!(self.peek_next(), Some((_, 'x' | 'X'))) => {
+                    let token = self.lex_prefixed_number(16, 2)?;
+                    tokens.push(token);
+                }
+
+                'b' if matches!(self.peek_next(), Some((_, '0' | '1'))) => {
+                    let token = self.lex_prefixed_number(2, 1)?;
+                    tokens.push(token);
+                }
+
                 '0'..='9' | '.' => {
                     let token = self.lex_number()?;
                     tokens.push(token);
@@ -238,6 +248,55 @@ impl Lexer {
         Ok(Token::new(TokenKind::Num(value, format), start))
     }
 
+    fn lex_prefixed_number(&mut self, radix: u32, prefix_len: usize) -> Result<Token, LexingError> {
+        let start = self.position();
+        let mut text = String::new();
+
+        for _ in 0..prefix_len {
+            if let Some((_, ch)) = self.next() {
+                text.push(ch);
+            }
+        }
+
+        let digits_start = text.len();
+        while let Some((_, ch)) = self.peek() {
+            if ch.is_digit(radix) {
+                text.push(ch);
+                self.next();
+            } else {
+                break;
+            }
+        }
+
+        if text.len() == digits_start {
+            return Err(LexingError::InvalidNumber { text, pos: start });
+        }
+
+        if matches!(self.peek(), Some((_, ch)) if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+        {
+            while let Some((_, ch)) = self.peek() {
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+                    text.push(ch);
+                    self.next();
+                } else {
+                    break;
+                }
+            }
+
+            return Err(LexingError::InvalidNumber { text, pos: start });
+        }
+
+        let digits = &text[digits_start..];
+        let value = u64::from_str_radix(digits, radix)
+            .map(|value| value as f64)
+            .map_err(|_| LexingError::InvalidNumber {
+                text: text.clone(),
+                pos: start,
+            })?;
+
+        Ok(Token::new(TokenKind::Num(value, None), start))
+    }
+
     fn lex_unit_suffix(&mut self) -> Option<UnitSuffix> {
         let start = self.current;
         let mut text = String::new();
@@ -329,7 +388,7 @@ impl UnitSuffix {
 
 #[cfg(test)]
 mod tests {
-    use crate::lexer::{Lexer, TokenKind};
+    use crate::lexer::{Lexer, LexingError, TokenKind};
 
     #[test]
     fn tokenizes_expression() {
@@ -402,6 +461,49 @@ mod tests {
             tokens[2].kind,
             TokenKind::Num(0.000034, Some(crate::lexer::NumberFormat::Scientific))
         );
+    }
+
+    #[test]
+    fn tokenizes_binary_numbers() {
+        let mut lexer = Lexer::new();
+
+        let tokens = lexer.tokenize("b01010101 + b10001011").unwrap();
+
+        assert_eq!(tokens[0].kind, TokenKind::Num(85.0, None));
+        assert_eq!(tokens[2].kind, TokenKind::Num(139.0, None));
+    }
+
+    #[test]
+    fn tokenizes_hexadecimal_numbers() {
+        let mut lexer = Lexer::new();
+
+        let tokens = lexer.tokenize("0xAFC34 + 0xAfcb3D").unwrap();
+
+        assert_eq!(tokens[0].kind, TokenKind::Num(719_924.0, None));
+        assert_eq!(tokens[2].kind, TokenKind::Num(11_520_829.0, None));
+    }
+
+    #[test]
+    fn rejects_invalid_prefixed_numbers() {
+        let mut lexer = Lexer::new();
+
+        let err = lexer.tokenize("b102").unwrap_err();
+        assert!(matches!(
+            err,
+            LexingError::InvalidNumber { text, pos } if text == "b102" && pos == 0
+        ));
+
+        let err = lexer.tokenize("0x").unwrap_err();
+        assert!(matches!(
+            err,
+            LexingError::InvalidNumber { text, pos } if text == "0x" && pos == 0
+        ));
+
+        let err = lexer.tokenize("0xAFG").unwrap_err();
+        assert!(matches!(
+            err,
+            LexingError::InvalidNumber { text, pos } if text == "0xAFG" && pos == 0
+        ));
     }
 
     #[test]
