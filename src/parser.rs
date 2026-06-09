@@ -1,10 +1,13 @@
 use std::fmt::Display;
 
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::{NumberFormat, Token, TokenKind};
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Number(f64),
+    Number {
+        value: f64,
+        format: Option<NumberFormat>,
+    },
     Symbol(String),
 
     Assign {
@@ -36,8 +39,8 @@ pub enum Expr {
 }
 
 impl Expr {
-    pub fn num(num: f64) -> Self {
-        return Self::Number(num);
+    pub fn num(num: f64, format: Option<NumberFormat>) -> Self {
+        return Self::Number { value: num, format };
     }
 
     pub fn sym(sym: String) -> Self {
@@ -97,8 +100,8 @@ pub enum BinaryOp {
 impl Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Expr::Number(num) => {
-                write!(f, "{}", num)
+            Expr::Number { value, .. } => {
+                write!(f, "{}", value)
             }
             Expr::Symbol(sym) => {
                 write!(f, "{}", sym)
@@ -285,10 +288,11 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match self.peek_kind() {
-            TokenKind::Num(value) => {
+            TokenKind::Num(value, format) => {
                 let value = *value;
+                let format = *format;
                 self.advance();
-                Ok(Expr::num(value))
+                Ok(Expr::num(value, format))
             }
             TokenKind::Sym(symbol) => {
                 let value = symbol.clone();

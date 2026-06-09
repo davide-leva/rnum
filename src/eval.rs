@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    lexer::{Lexer, LexingError},
+    lexer::{Lexer, LexingError, NumberFormat, UnitFormat},
     parser::{BinaryOp, Expr, ParseError, Parser, UnaryOp},
     symbols::SymbolCache,
 };
@@ -28,8 +28,46 @@ pub enum EvalError {
 }
 
 pub enum EvalOutput {
-    Value(f64),
+    Value(EvalValue),
     FunctionDefined { name: String, params: Vec<String> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EvalValue {
+    pub value: f64,
+    pub format: Option<NumberFormat>,
+}
+
+impl EvalValue {
+    fn plain(value: f64) -> Self {
+        Self {
+            value,
+            format: None,
+        }
+    }
+
+    fn new(value: f64, format: Option<NumberFormat>) -> Self {
+        Self { value, format }
+    }
+
+    fn with_format(self, format: Option<NumberFormat>) -> Self {
+        Self {
+            value: self.value,
+            format,
+        }
+    }
+
+    fn combine_format(self, other: Self) -> Option<NumberFormat> {
+        combine_formats(self.format, other.format)
+    }
+
+    pub fn formatted(&self) -> String {
+        match self.format {
+            Some(NumberFormat::Unit(format)) => format_unit(self.value, format),
+            Some(NumberFormat::Scientific) => format_scientific(self.value),
+            None => self.value.to_string(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -56,7 +94,7 @@ impl Evaluator {
 
     pub fn eval(&mut self, input: &str) -> Result<f64, EvalError> {
         match self.eval_line(input)? {
-            EvalOutput::Value(value) => Ok(value),
+            EvalOutput::Value(value) => Ok(value.value),
             EvalOutput::FunctionDefined { .. } => Ok(0.0),
         }
     }
@@ -123,19 +161,20 @@ impl Evaluator {
         self.functions.remove(name).is_some()
     }
 
-    fn eval_and_set(&mut self, expr: &Expr) -> Result<f64, EvalError> {
-        self.ans = self.eval_expr(&expr)?;
+    fn eval_and_set(&mut self, expr: &Expr) -> Result<EvalValue, EvalError> {
+        let value = self.eval_expr(expr)?;
+        self.ans = value.value;
         self.symbols.save("ans".to_string(), self.ans);
-        Ok(self.ans)
+        Ok(value)
     }
 
-    pub fn eval_expr(&mut self, expr: &Expr) -> Result<f64, EvalError> {
+    pub fn eval_expr(&mut self, expr: &Expr) -> Result<EvalValue, EvalError> {
         match expr {
-            Expr::Number(val) => Ok(*val),
+            Expr::Number { value, format } => Ok(EvalValue::new(*value, *format)),
             Expr::Symbol(name) => self.resolve_symbol(name),
             Expr::Assign { name, expr } => {
                 let value = self.eval_expr(expr)?;
-                self.symbols.save(name.clone(), value);
+                self.symbols.save(name.clone(), value.value);
                 Ok(value)
             }
             Expr::FunctionDef { name, params, body } => {
@@ -147,44 +186,49 @@ impl Evaluator {
                     },
                 );
 
-                Ok(0.0)
+                Ok(EvalValue::plain(0.0))
             }
             Expr::Call { name, args } => {
                 let mut values = Vec::new();
+                let mut format = None;
                 for arg in args {
-                    values.push(self.eval_expr(arg)?);
+                    let value = self.eval_expr(arg)?;
+                    format = combine_formats(format, value.format);
+                    values.push(value.value);
                 }
 
-                self.call_function(name, values)
+                let result = self.call_function(name, values)?;
+                Ok(result.with_format(combine_formats(format, result.format)))
             }
             Expr::Unary { op, expr: inner } => {
                 let value = self.eval_expr(inner)?;
 
                 match op {
-                    UnaryOp::Neg => Ok(-value),
+                    UnaryOp::Neg => Ok(EvalValue::new(-value.value, value.format)),
                 }
             }
             Expr::Binary { left, op, right } => {
                 let left = self.eval_expr(left)?;
                 let right = self.eval_expr(right)?;
+                let format = left.combine_format(right);
 
                 match op {
-                    BinaryOp::Add => Ok(left + right),
-                    BinaryOp::Sub => Ok(left - right),
-                    BinaryOp::Mul => Ok(left * right),
+                    BinaryOp::Add => Ok(EvalValue::new(left.value + right.value, format)),
+                    BinaryOp::Sub => Ok(EvalValue::new(left.value - right.value, format)),
+                    BinaryOp::Mul => Ok(EvalValue::new(left.value * right.value, format)),
                     BinaryOp::Div => {
-                        if right == 0.0 {
+                        if right.value == 0.0 {
                             Err(EvalError::DivisionByZero)
                         } else {
-                            Ok(left / right)
+                            Ok(EvalValue::new(left.value / right.value, format))
                         }
                     }
-                    BinaryOp::Pow => Ok(left.powf(right)),
+                    BinaryOp::Pow => Ok(EvalValue::new(left.value.powf(right.value), format)),
                     BinaryOp::Mod => {
-                        if right == 0.0 {
+                        if right.value == 0.0 {
                             Err(EvalError::DivisionByZero)
                         } else {
-                            Ok(left % right)
+                            Ok(EvalValue::new(left.value % right.value, format))
                         }
                     }
                 }
@@ -192,19 +236,20 @@ impl Evaluator {
         }
     }
 
-    fn resolve_symbol(&self, name: &str) -> Result<f64, EvalError> {
+    fn resolve_symbol(&self, name: &str) -> Result<EvalValue, EvalError> {
         for scope in self.scopes.iter().rev() {
             if let Some(value) = scope.get(name) {
-                return Ok(*value);
+                return Ok(EvalValue::plain(*value));
             }
         }
 
         self.symbols
             .get(name)
+            .map(EvalValue::plain)
             .ok_or(EvalError::UnknownVariable(name.to_string()))
     }
 
-    fn call_function(&mut self, name: &str, values: Vec<f64>) -> Result<f64, EvalError> {
+    fn call_function(&mut self, name: &str, values: Vec<f64>) -> Result<EvalValue, EvalError> {
         if is_builtin(name) {
             return self.call_builtin(name, values);
         }
@@ -243,7 +288,7 @@ impl Evaluator {
         result
     }
 
-    fn call_builtin(&self, name: &str, values: Vec<f64>) -> Result<f64, EvalError> {
+    fn call_builtin(&self, name: &str, values: Vec<f64>) -> Result<EvalValue, EvalError> {
         if values.len() != 1 {
             return Err(EvalError::WrongArgCount {
                 function: name.to_string(),
@@ -262,12 +307,12 @@ impl Evaluator {
                         value,
                     })
                 } else {
-                    Ok(value.sqrt())
+                    Ok(EvalValue::plain(value.sqrt()))
                 }
             }
-            "sin" => Ok(value.sin()),
-            "cos" => Ok(value.cos()),
-            "tan" => Ok(value.tan()),
+            "sin" => Ok(EvalValue::plain(value.sin())),
+            "cos" => Ok(EvalValue::plain(value.cos())),
+            "tan" => Ok(EvalValue::plain(value.tan())),
             "ln" => {
                 if value <= 0.0 {
                     Err(EvalError::InvalidArgument {
@@ -275,7 +320,7 @@ impl Evaluator {
                         value,
                     })
                 } else {
-                    Ok(value.ln())
+                    Ok(EvalValue::plain(value.ln()))
                 }
             }
             "log" => {
@@ -285,12 +330,73 @@ impl Evaluator {
                         value,
                     })
                 } else {
-                    Ok(value.log10())
+                    Ok(EvalValue::plain(value.log10()))
                 }
             }
-            "abs" => Ok(value.abs()),
+            "abs" => Ok(EvalValue::plain(value.abs())),
             _ => unreachable!("builtin list and dispatch are out of sync"),
         }
+    }
+}
+
+fn combine_formats(
+    left: Option<NumberFormat>,
+    right: Option<NumberFormat>,
+) -> Option<NumberFormat> {
+    match (left, right) {
+        (Some(NumberFormat::Unit(_)), _) => left,
+        (_, Some(NumberFormat::Unit(_))) => right,
+        (Some(NumberFormat::Scientific), _) | (_, Some(NumberFormat::Scientific)) => {
+            Some(NumberFormat::Scientific)
+        }
+        (None, None) => None,
+    }
+}
+
+fn format_scientific(value: f64) -> String {
+    if value == 0.0 {
+        return "0e0".to_string();
+    }
+
+    let text = format!("{value:e}");
+    let Some((mantissa, exponent)) = text.split_once('e') else {
+        return text;
+    };
+
+    format!(
+        "{}e{}",
+        trim_float(mantissa),
+        exponent.trim_start_matches('+')
+    )
+}
+
+fn format_unit(value: f64, format: UnitFormat) -> String {
+    let suffixes = match format {
+        UnitFormat::LowerB => ["b", "Kb", "Mb", "Gb", "Tb", "Pb", "Eb"],
+        UnitFormat::UpperB => ["B", "KB", "MB", "GB", "TB", "PB", "EB"],
+    };
+
+    let mut scaled = value;
+    let mut suffix = suffixes[0];
+
+    for candidate in suffixes.iter().skip(1) {
+        if scaled.abs() < 1024.0 {
+            break;
+        }
+
+        scaled /= 1024.0;
+        suffix = candidate;
+    }
+
+    format!("{}{}", trim_float(&format!("{scaled:.12}")), suffix)
+}
+
+fn trim_float(text: &str) -> String {
+    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+    if trimmed == "-0" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -300,7 +406,7 @@ fn is_builtin(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EvalError, Evaluator};
+    use super::{EvalError, EvalOutput, Evaluator};
 
     #[test]
     fn assigns_and_reads_variable() {
@@ -397,5 +503,77 @@ mod tests {
 
         assert_eq!(ast.to_string(), "Assign(x, Add(1, Mul(2, 3)))");
         assert!(evaluator.eval("x").is_err());
+    }
+
+    #[test]
+    fn formats_scientific_result_when_expression_uses_scientific_literal() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("10e5 + 1").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 1_000_001.0);
+        assert_eq!(result.formatted(), "1.000001e6");
+    }
+
+    #[test]
+    fn formats_unit_result_when_expression_uses_lower_b_literal() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("1Kb + 512").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 1536.0);
+        assert_eq!(result.formatted(), "1.5Kb");
+    }
+
+    #[test]
+    fn formats_unit_result_when_expression_uses_upper_b_literal() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("1KB + 512B").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 1536.0);
+        assert_eq!(result.formatted(), "1.5KB");
+    }
+
+    #[test]
+    fn unit_format_takes_precedence_over_scientific_result() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("1KB + 1024e1").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 11_264.0);
+        assert_eq!(result.formatted(), "11KB");
+    }
+
+    #[test]
+    fn formats_unit_result_with_binary_base() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("1b * 1024").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 1024.0);
+        assert_eq!(result.formatted(), "1Kb");
+    }
+
+    #[test]
+    fn formats_upper_unit_result_with_binary_base() {
+        let mut evaluator = Evaluator::new();
+
+        let EvalOutput::Value(result) = evaluator.eval_line("2KB * 1024^2").unwrap() else {
+            panic!("expected value");
+        };
+
+        assert_eq!(result.value, 2_147_483_648.0);
+        assert_eq!(result.formatted(), "2GB");
     }
 }

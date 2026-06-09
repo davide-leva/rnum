@@ -1,6 +1,6 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    Num(f64),
+    Num(f64, Option<NumberFormat>),
     Sym(String),
     Plu,
     Min,
@@ -15,10 +15,22 @@ pub enum TokenKind {
     EOE,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberFormat {
+    Scientific,
+    Unit(UnitFormat),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitFormat {
+    LowerB,
+    UpperB,
+}
+
 impl TokenKind {
     pub fn name(&self) -> &'static str {
         match self {
-            TokenKind::Num(_) => "number",
+            TokenKind::Num(_, _) => "number",
             TokenKind::Sym(_) => "symbol",
             TokenKind::Plu => "`+`",
             TokenKind::Min => "`-`",
@@ -155,6 +167,8 @@ impl Lexer {
 
         let mut text = String::new();
         let mut dot_seen = false;
+        let mut exp_seen = false;
+        let mut format = None;
 
         while let Some((_, ch)) = self.peek() {
             match ch {
@@ -169,6 +183,24 @@ impl Lexer {
                     self.next();
                 }
 
+                'e' | 'E' if !exp_seen => {
+                    exp_seen = true;
+                    text.push(ch);
+                    self.next();
+
+                    if let Some((_, sign @ ('+' | '-'))) = self.peek() {
+                        text.push(sign);
+                        self.next();
+                    }
+
+                    match self.peek() {
+                        Some((_, '0'..='9')) => {}
+                        _ => {
+                            return Err(LexingError::InvalidNumber { text, pos: start });
+                        }
+                    }
+                }
+
                 '.' => {
                     return Err(LexingError::InvalidNumber { text, pos: start });
                 }
@@ -181,14 +213,44 @@ impl Lexer {
             return Err(LexingError::InvalidNumber { text, pos: start });
         }
 
-        let value = text
+        let mut value = text
             .parse::<f64>()
             .map_err(|_| LexingError::InvalidNumber {
                 text: text.clone(),
                 pos: start,
             })?;
 
-        Ok(Token::new(TokenKind::Num(value), start))
+        if exp_seen {
+            format = Some(NumberFormat::Scientific);
+        }
+
+        if let Some(unit) = self.lex_unit_suffix() {
+            value *= unit.multiplier;
+            format = Some(NumberFormat::Unit(unit.format));
+        }
+
+        Ok(Token::new(TokenKind::Num(value, format), start))
+    }
+
+    fn lex_unit_suffix(&mut self) -> Option<UnitSuffix> {
+        let start = self.current;
+        let mut text = String::new();
+
+        while let Some((_, ch)) = self.peek() {
+            if ch.is_ascii_alphabetic() {
+                text.push(ch);
+                self.next();
+            } else {
+                break;
+            }
+        }
+
+        let suffix = UnitSuffix::parse(&text);
+        if suffix.is_none() {
+            self.current = start;
+        }
+
+        suffix
     }
 
     fn lex_symbol(&mut self) -> Result<Token, LexingError> {
@@ -223,6 +285,38 @@ impl Lexer {
     }
 }
 
+struct UnitSuffix {
+    multiplier: f64,
+    format: UnitFormat,
+}
+
+impl UnitSuffix {
+    fn parse(text: &str) -> Option<Self> {
+        let (format, power) = match text {
+            "b" => (UnitFormat::LowerB, 0),
+            "Kb" => (UnitFormat::LowerB, 1),
+            "Mb" => (UnitFormat::LowerB, 2),
+            "Gb" => (UnitFormat::LowerB, 3),
+            "Tb" => (UnitFormat::LowerB, 4),
+            "Pb" => (UnitFormat::LowerB, 5),
+            "Eb" => (UnitFormat::LowerB, 6),
+            "B" => (UnitFormat::UpperB, 0),
+            "KB" => (UnitFormat::UpperB, 1),
+            "MB" => (UnitFormat::UpperB, 2),
+            "GB" => (UnitFormat::UpperB, 3),
+            "TB" => (UnitFormat::UpperB, 4),
+            "PB" => (UnitFormat::UpperB, 5),
+            "EB" => (UnitFormat::UpperB, 6),
+            _ => return None,
+        };
+
+        Some(Self {
+            multiplier: 1024.0_f64.powi(power),
+            format,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::lexer::{Lexer, TokenKind};
@@ -237,14 +331,14 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
-                TokenKind::Num(1.0),
+                TokenKind::Num(1.0, None),
                 TokenKind::Plu,
-                TokenKind::Num(2.5),
+                TokenKind::Num(2.5, None),
                 TokenKind::Str,
                 TokenKind::LPa,
-                TokenKind::Num(3.0),
+                TokenKind::Num(3.0, None),
                 TokenKind::Min,
-                TokenKind::Num(0.5),
+                TokenKind::Num(0.5, None),
                 TokenKind::RPa,
                 TokenKind::EOE,
             ]
@@ -258,10 +352,10 @@ mod tests {
         let first = lexer.tokenize("10").unwrap();
         let second = lexer.tokenize("2 + 3").unwrap();
 
-        assert_eq!(first[0].kind, TokenKind::Num(10.0));
-        assert_eq!(second[0].kind, TokenKind::Num(2.0));
+        assert_eq!(first[0].kind, TokenKind::Num(10.0, None));
+        assert_eq!(second[0].kind, TokenKind::Num(2.0, None));
         assert_eq!(second[1].kind, TokenKind::Plu);
-        assert_eq!(second[2].kind, TokenKind::Num(3.0));
+        assert_eq!(second[2].kind, TokenKind::Num(3.0, None));
     }
 
     #[test]
@@ -273,5 +367,47 @@ mod tests {
 
         assert_eq!(first[2].kind, TokenKind::Sym("ans".into()));
         assert_eq!(second[0].kind, TokenKind::Sym("ans".into()));
+    }
+
+    #[test]
+    fn tokenizes_scientific_numbers() {
+        let mut lexer = Lexer::new();
+
+        let tokens = lexer.tokenize("10e5 + 34e-6").unwrap();
+
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Num(1_000_000.0, Some(crate::lexer::NumberFormat::Scientific))
+        );
+        assert_eq!(
+            tokens[2].kind,
+            TokenKind::Num(0.000034, Some(crate::lexer::NumberFormat::Scientific))
+        );
+    }
+
+    #[test]
+    fn tokenizes_unit_numbers() {
+        let mut lexer = Lexer::new();
+
+        let tokens = lexer.tokenize("2Kb + 3MB").unwrap();
+
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Num(
+                2048.0,
+                Some(crate::lexer::NumberFormat::Unit(
+                    crate::lexer::UnitFormat::LowerB
+                ))
+            )
+        );
+        assert_eq!(
+            tokens[2].kind,
+            TokenKind::Num(
+                3_145_728.0,
+                Some(crate::lexer::NumberFormat::Unit(
+                    crate::lexer::UnitFormat::UpperB
+                ))
+            )
+        );
     }
 }

@@ -29,7 +29,7 @@ fn main() {
 
 fn cmd_eval(evaluator: &mut Evaluator, expr: &str) -> CommandResult {
     match evaluator.eval_line(expr) {
-        Ok(EvalOutput::Value(result)) => CommandResult::success(result.to_string()),
+        Ok(EvalOutput::Value(result)) => CommandResult::success(result.formatted()),
         Ok(EvalOutput::FunctionDefined { name, params }) => {
             CommandResult::success(format!("defined {}({})", name, params.join(", ")))
         }
@@ -62,6 +62,11 @@ fn print_help() -> String {
         "",
         "Operators:",
         "  =  +  -  *  /  %  ^",
+        "",
+        "Numbers:",
+        "  10e5  34e-6",
+        "  1b  1Kb  1Mb  1Gb  1Tb  1Pb",
+        "  1B  1KB  1MB  1GB  1TB  1PB",
         "",
         "Functions:",
         "  sqrt(x)  sin(x)  cos(x)  tan(x)  ln(x)  log(x)  abs(x)",
